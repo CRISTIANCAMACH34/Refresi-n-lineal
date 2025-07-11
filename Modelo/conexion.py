@@ -1,31 +1,15 @@
-import mysql.connector
-from mysql.connector import Error
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-def conectar_mysql():
+def conectar_engine():
     try:
-        connection = mysql.connector.connect(
-            host="localhost",
-            user="cristian",   
-            password="12345",      
-            database="Regresion"        
+        engine =create_engine(
+            "mysql+mysqlconnector://cristian:12345@localhost/Regresion"
         )
+        with engine.connect() as connection:
+            print ("Conexión exitosa")
 
-        if connection.is_connected():
-            db_Info = connection.get_server_info()
-            print("Conectado a MySQL versión " + db_Info)
-
-            cursor = connection.cursor()
-            cursor.execute("SELECT DATABASE();")
-            record = cursor.fetchone()
-            print("Conectado a la base de datos: " + str(record[0]))
-    
-    except Error as e:
-        print("Error al conectar a MySQL:", e)
-
-    finally:
-        if connection.is_connected():
-            cursor.close()
-            connection.close()
-            print("Conexión cerrada.")
-
-conectar_mysql()
+        return engine
+    except Exception as e:
+        print("Error al conectar a la base de datos:", e)
+        return None
