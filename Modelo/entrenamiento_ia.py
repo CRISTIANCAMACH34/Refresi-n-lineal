@@ -89,6 +89,26 @@ def ClasificarTipo(excel):
         return excel
 
 def LimpiarDatos(excel):
-    #Con esto limpiamos todos los valores nulo en los campos seleccionado
+    #Con esto limpiamos y eliminamos todas las filas con los valores nulo en los campos seleccionado ya que si falta una el modelo no podrá servir correctamente
     return excel.dropna(subset=['precio', 'habitaciones', 'area', 'antiguedad'])
 
+def CodificarDatos(excel):
+    #Crea una copia para no modificar de forma directa al dataframe original
+    excel = excel.copy()    
+
+    #Se convierte los datos de tipo_hogar a tipo categoria  con el astype y asígna un número único a cada categoría 
+    excel['tipo_hogar'] = excel['tipo_hogar'].astype('category').cat.codes
+
+    #Hacemos lo mismo que la anterior solo que con categoria 
+    excel['categoria'] = excel['categoria'].astype('category').cat.codes
+
+    return excel
+
+def SeleccionarVariables(excel):
+    ## X son los atributos que usarás para hacer predicciones
+    x= excel[['area', 'habitaciones', 'antiguedad', 'tipo_hogar', 'categoria']]
+
+    #Y es el valor que deseas predecir
+    y= excel['precio']
+
+    return x, y
