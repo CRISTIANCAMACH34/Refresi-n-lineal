@@ -1,5 +1,5 @@
 import re
-
+from sqlalchemy import text
 from pandas.io.formats.style import Subset
 from conexion import conectar_engine
 import pandas as pd
@@ -22,12 +22,18 @@ engine = conectar_engine()
 def InsertarExcel(engine):
     try:
         conexion = engine
-        excel = pd.read_csv("/Documentos/Personales/Adso/dataset_vivienda(in).csv")
+        excel = pd.read_csv("/home/cristian/Documentos/Personales/Adso/dataset_vivienda(in).csv", encoding='latin-1')
+
         #Verifica si todos los valores de la columna descripción son tipo strings, y si no los convierte en strings
         excel['descripcion'] = excel['descripcion'].apply(lambda x: str(x) if not isinstance(x, str) else x)
+
         #Esto maneja la conversión de codificación de caracteres  de texto para la columna descripción del excel
         excel['descripcion'] = excel['descripcion'].apply(lambda x: x.encode('latin-1').decode('utf-8') if isinstance(x, str) else x)
 
+        excel['fecha_publicacion'] = pd.to_datetime(excel['fecha_publicacion'], errors='coerce')
+
+        # Luego la formateas al estilo ISO para que MySQL acepte
+        excel['fecha_publicacion'] = excel['fecha_publicacion'].dt.strftime('%Y-%m-%d')
         excel.rename(columns={
             'precio': 'precio', 
             'area': 'area',
@@ -81,7 +87,7 @@ def ClasificarTipo(excel):
             return "apartamento", "apartamento" if "apart" in desc else "casa"
         
         #Me crea dos nuevas columnas nuevas a partir de una función que me devuelve dos valores
-        excel[['tipo_vivienda', 'categoria']] = excel['descripcion'].apply(lambda x: pd.Series(DetectarTipo(x)))
+        excel[['tipo_hogar', 'categoria']] = excel['descripcion'].apply(lambda x: pd.Series(DetectarTipo(x)))
         return excel
 
     except Exception as e:
@@ -112,3 +118,81 @@ def SeleccionarVariables(excel):
     y= excel['precio']
 
     return x, y
+
+def PrepararDatos(x, y ):
+    try: 
+        excel = LimpiarDatos(excel)
+        excel = CodificarDatos(excel)
+        x, y = SeleccionarVariables(excel)
+        return x, y
+    except Exception as e:
+        print("Error al preparar los datos:", e)
+        return None
+def InsertarDatosEnBD(df, engine):
+    MAX_LENGTH = 20  # Longitud máxima permitida en la columna 'tipo'
+
+    try:
+        with engine.begin() as conn:
+            for index, row in df.iterrows():
+                # Inserta en casa o apartamento según categoría
+                if row['categoria'] == 'casa':
+                    conn.execute(text("""
+                        INSERT INTO casa (precio, area, habitaciones, antiguedad)
+                        VALUES (:precio, :area, :habitaciones, :antiguedad)
+                    """), {
+                        'precio': row['precio'],
+                        'area': row['area'],
+                        'habitaciones': row['habitaciones'],
+                        'antiguedad': row['antiguedad']
+                    })
+                    ref_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+                else:
+                    conn.execute(text("""
+                        INSERT INTO apartamento (precio, area, habitaciones, antiguedad)
+                        VALUES (:precio, :area, :habitaciones, :antiguedad)
+                    """), {
+                        'precio': row['precio'],
+                        'area': row['area'],
+                        'habitaciones': row['habitaciones'],
+                        'antiguedad': row['antiguedad']
+                    })
+                    ref_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+
+                # Truncar el tipo para que no exceda el tamaño máximo
+                tipo_truncado = row['tipo_hogar'][:MAX_LENGTH]
+
+                # Inserta en tipo_hogar
+                conn.execute(text("""
+                    INSERT INTO tipo_hogar (tipo, referencia_id)
+                    VALUES (:tipo, :ref_id)
+                """), {
+                    'tipo': tipo_truncado,
+                    'ref_id': ref_id
+                })
+
+                tipo_hogar_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+
+                # Inserta en hogar
+                conn.execute(text("""
+                    INSERT INTO hogar (fecha_publicacion, descripcion, tipo_hogar_id)
+                    VALUES (:fecha, :descripcion, :tipo_hogar_id)
+                """), {
+                    'fecha': row['fecha_publicacion'],
+                    'descripcion': row['descripcion'],
+                    'tipo_hogar_id': tipo_hogar_id
+                })
+        print("Datos insertados correctamente en las tablas reales.")
+    except Exception as e:
+        print("Error al insertar en la base de datos relacional:", e)
+
+if __name__ == "__main__":
+    # 1. Leer y guardar el Excel en la tabla temporal
+    excel = InsertarExcel(engine)
+    
+    # 2. Continuar si se leyó correctamente
+    if excel is not None:
+        # 3. Clasificar el tipo de hogar
+        excel = ClasificarTipo(excel)
+
+        # 4. Insertar los datos clasificados en las tablas reales
+        InsertarDatosEnBD(excel, engine)
