@@ -1,7 +1,7 @@
 import re
-from sqlalchemy import text
+from sqlalchemy import text, try_cast
 from pandas.io.formats.style import Subset
-from conexion import conectar_engine
+from Modelo.conexion import conectar_engine
 import pandas as pd
 import numpy as np
 #Me sirve para las graficas
@@ -69,7 +69,7 @@ def ClasificarTipo(excel):
 
         #Esta función me sirve para verificar que tipo de vivienda es con el desc buscando en la descripcion palabras como aparta para apartamento y casa para casa y así mismo determinar que es
         def DetectarTipo(desc):
-            if pd.isnull(desc):  # Corregido: excel.pd.isnull no existe
+            if pd.isnull(desc):   
                 return 'general', 'casa'
             desc = desc.lower()
             
@@ -121,13 +121,14 @@ def SeleccionarVariables(excel):
 
 def PrepararDatos(x, y ):
     try: 
-        excel = LimpiarDatos(excel)
+        excel = LimpiarDatos(engine)
         excel = CodificarDatos(excel)
         x, y = SeleccionarVariables(excel)
         return x, y
     except Exception as e:
         print("Error al preparar los datos:", e)
         return None
+
 def InsertarDatosEnBD(df, engine):
     MAX_LENGTH = 20  # Longitud máxima permitida en la columna 'tipo'
 
@@ -184,15 +185,148 @@ def InsertarDatosEnBD(df, engine):
         print("Datos insertados correctamente en las tablas reales.")
     except Exception as e:
         print("Error al insertar en la base de datos relacional:", e)
+ 
 
-if __name__ == "__main__":
-    # 1. Leer y guardar el Excel en la tabla temporal
-    excel = InsertarExcel(engine)
+#(Total de viviendas en el sistema, promedio del precio por metro cuadrado de la vivienda en la región, clasificación y total de viviendas por tipo de vivienda)
+
+def TotalViviendas(engine):
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(text("SELECT COUNT(*) FROM hogar"))
+            total = result.scalar()
+            return total
+    except Exception as e:
+        print("Error al obtener el total de viviendas:", e)
+        return None
+
+def PromedioPrecio(engine):
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(text("SELECT AVG(precio) FROM hogar"))
+            #Se usa el scalar para obtener un valor unico de la consulta sql
+            promedio = result.scalar()
+            return promedio
+    except Exception as e:
+        print("Error al obtener el promedio de precio:", e)
+        return None
+
+def PromedioPrecioMetro(engine):
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(text("SELECT AVG(precio/area) FROM hogar"))
+            promedio = result.scalar()
+            return promedio
+    except Exception as e:
+        print("Error al obtener el promedio de precio por metro cuadrado:", e)
+        return None
     
-    # 2. Continuar si se leyó correctamente
-    if excel is not None:
-        # 3. Clasificar el tipo de hogar
-        excel = ClasificarTipo(excel)
+def ClasificacionViviendas(engine):
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(text("SELECT tipo_hogar, COUNT(*) FROM tipo_hogar GROUP BY tipo_hogar"))
+            #Se usa el fetchall para obtener todos los valores de la consulta sql
+            clasificacion = result.fetchall()
+            return clasificacion
+    except Exception as e:
+        print("Error al obtener la clasificación de viviendas:", e)
+        return None
 
-        # 4. Insertar los datos clasificados en las tablas reales
-        InsertarDatosEnBD(excel, engine)
+def TotalViviendasPorTipo(engine):
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(text("SELECT tipo_hogar, COUNT(*) FROM tipo_hogar GROUP BY tipo_hogar"))
+            #Se usa el fetchall para obtener todos los valores de la consulta sql
+            total = result.fetchall()
+            return total
+    except Exception as e:
+        print("Error al obtener el total de viviendas por tipo:", e)
+        return None
+
+#Sacar el aproximado de precio de un hogar con el area, habitaciones y antiguedad y el tipo de vivienda usando la regresión lineal y marchinlerming ingresado por el usuario usando las variables dependiente y independiente
+def ObtenerTodasLasViviendas(engine):
+    """Obtiene todas las viviendas con sus detalles"""
+    try:
+        with engine.connect() as connection:
+            query = """
+                SELECT h.id, h.descripcion, h.fecha_publicacion,
+                       c.precio, c.area, c.habitaciones, c.antiguedad,
+                       th.tipo as tipo_hogar, 'Casa' as categoria
+                FROM hogar h
+                JOIN tipo_hogar th ON h.tipo_hogar_id = th.id
+                JOIN casa c ON th.referencia_id = c.id
+                UNION ALL
+                SELECT h.id, h.descripcion, h.fecha_publicacion,
+                       a.precio, a.area, a.habitaciones, a.antiguedad,
+                       th.tipo as tipo_hogar, 'Apartamento' as categoria
+                FROM hogar h
+                JOIN tipo_hogar th ON h.tipo_hogar_id = th.id
+                JOIN apartamento a ON th.referencia_id = a.id
+                ORDER BY id
+            """
+            result = connection.execute(text(query))
+            columnas = result.keys()
+            viviendas = [dict(zip(columnas, row)) for row in result.fetchall()]
+            return viviendas
+    except Exception as e:
+        print("Error al obtener las viviendas:", e)
+        return []
+
+def AproximadoValor(engine, area, habitaciones, antiguedad, tipo_hogar, categoria):
+    try:
+        # Obtener los datos para entrenar el modelo
+        query = """
+            SELECT c.area, c.habitaciones, c.antiguedad, 
+                   th.tipo as tipo_hogar, 'Casa' as tipo_vivienda, c.precio
+            FROM casa c
+            JOIN tipo_hogar th ON c.id = th.referencia_id
+            WHERE th.tipo = :tipo_hogar
+            UNION ALL
+            SELECT a.area, a.habitaciones, a.antiguedad, 
+                   th.tipo as tipo_hogar, 'Apartamento' as tipo_vivienda, a.precio
+            FROM apartamento a
+            JOIN tipo_hogar th ON a.id = th.referencia_id
+            WHERE th.tipo = :tipo_hogar
+        """
+        
+        with engine.connect() as connection:
+            # Obtener datos de entrenamiento
+            df = pd.read_sql_query(text(query), connection, params={'tipo_hogar': tipo_hogar})
+            
+            if df.empty:
+                return None
+                
+            # Codificar las variables categóricas
+            df['tipo_hogar'] = df['tipo_hogar'].astype('category').cat.codes
+            df['tipo_vivienda'] = df['tipo_vivienda'].astype('category').cat.codes
+            
+            # Separar características (X) y variable objetivo (y)
+            X = df[['area', 'habitaciones', 'antiguedad', 'tipo_hogar', 'tipo_vivienda']]
+            y = df['precio']
+            
+            # Crear y entrenar el modelo
+            modelo = LinearRegression()
+            modelo.fit(X, y)
+            
+            # Preparar los datos de entrada para la predicción
+            tipo_vivienda_cod = 0 if categoria.lower() == 'casa' else 1
+            tipo_hogar_cod = df['tipo_hogar'].iloc[0]  # Tomamos el código del tipo de hogar del dataframe
+            
+            datos_prediccion = pd.DataFrame({
+                'area': [area],
+                'habitaciones': [habitaciones],
+                'antiguedad': [antiguedad],
+                'tipo_hogar': [tipo_hogar_cod],
+                'tipo_vivienda': [tipo_vivienda_cod]
+            })
+            
+            # Realizar la predicción
+            precio_predicho = modelo.predict(datos_prediccion)[0]
+            return round(precio_predicho, 2)
+            
+    except Exception as e:
+        print("Error al calcular el valor aproximado de la vivienda:", e)
+        return None
+
+        
+
+            

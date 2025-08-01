@@ -1,0 +1,11 @@
+flask
+flask-cors
+numpy
+scikit-learn
+mysql-connector-python
+flask-sqlalchemy
+flask-session
+flask-login
+flask-bcrypt
+flask-wtf
+flask-mail
